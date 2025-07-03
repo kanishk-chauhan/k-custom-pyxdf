@@ -10,6 +10,20 @@
 This function is closely following the load_xdf reference implementation.
 """
 
+###### THIS IS A SLIGHTLY MODIFIED VERSION OF THE ORIGINAL CODE TO ENABLE INTEGRATION WITH MY WORKFLOW
+"""
+I HAD TO MAKE SOME CHANGES TO THIS LIBRARY TO BE ABLE TO WORK WITH OUR .XDF FILES THAT INCLUDE ANNOTATIONS AND HAVE A FORMATTING THAT IS DIFFERRENT THAN WHAT pyxdf EXPECTS.
+
+DETAILS:
+1. COMMENTED OUT THE ORIGINAL 'class StreamData' (LABELED 'ORIGINAL' AT THE TOP) AND ADDED A NEW VERSION JUST BELOW IT (LABELED 'ADDED BY ME' AT THE TOP).
+2. COMMENTED OUT THE ORIGINAL LINE 'temp[StreamId] = StreamData(hdr)' (LABELED 'OROGINAL') AND REPLACED IT WITH 
+temp[StreamId] = StreamData(hdr, stream_id=StreamId) (LABELED 'ADDEDE BY ME')
+3. COMMENTED OUT THE ORIGINAL LINE 'logger.debug("  found stream " + hdr["info"]["name"][0])' (LABELED 'ORIGINAL') IN THE FUNCTION load_xdf(). REPLACED THAT LINE WITH TWO LINES JUST BELOW IT -
+stream_name = hdr["info"].get("name", [f"UnnamedStream_{StreamId}"])[0] # THIS AND LINE BELOW ADDED BY ME
+logger.debug(f"  found stream {stream_name}") # THIS AND LINE ABOVE ADDED BY ME
+"""
+
+
 import gzip
 import io
 import itertools
@@ -25,12 +39,49 @@ __all__ = ["load_xdf"]
 
 logger = logging.getLogger(__name__)
 
+# ORIGINAL
+# class StreamData:
+#     """Temporary per-stream data."""
 
+#     def __init__(self, xml):
+#         """Init a new StreamData object from a stream header."""
+#         fmts = dict(
+#             double64=np.float64,
+#             float32=np.float32,
+#             string=object,
+#             int32=np.int32,
+#             int16=np.int16,
+#             int8=np.int8,
+#             int64=np.int64,
+#         )
+#         # number of channels
+#         self.nchns = int(xml["info"]["channel_count"][0])
+#         # nominal sampling rate in Hz
+#         self.srate = float(xml["info"]["nominal_srate"][0])
+#         # format string (int8, int16, int32, float32, double64, string)
+#         self.fmt = xml["info"]["channel_format"][0]
+#         # list of time-stamp chunks (each an ndarray, in seconds)
+#         self.time_stamps = []
+#         # list of time-series chunks (each an ndarray or list of lists)
+#         self.time_series = []
+#         # list of clock offset measurement times (in seconds)
+#         self.clock_times = []
+#         # list of clock offset measurement values (in seconds)
+#         self.clock_values = []
+#         # last observed time stamp, for delta decompression
+#         self.last_timestamp = 0.0
+#         # nominal sampling interval, in seconds, for delta decompression
+#         self.tdiff = 1.0 / self.srate if self.srate > 0 else 0.0
+#         self.effective_srate = 0.0
+#         # pre-calc some parsing parameters for efficiency
+#         if self.fmt != "string":
+#             self.dtype = np.dtype(fmts[self.fmt])
+#             # number of bytes to read from stream to handle one sample
+#             self.samplebytes = self.nchns * self.dtype.itemsize
+
+# ADDED BY ME
 class StreamData:
-    """Temporary per-stream data."""
-
-    def __init__(self, xml):
-        """Init a new StreamData object from a stream header."""
+    def __init__(self, xml, stream_id=None):
         fmts = dict(
             double64=np.float64,
             float32=np.float32,
@@ -40,38 +91,44 @@ class StreamData:
             int8=np.int8,
             int64=np.int64,
         )
-        # number of channels
-        self.nchns = int(xml["info"]["channel_count"][0])
-        # nominal sampling rate in Hz
-        self.srate = float(xml["info"]["nominal_srate"][0])
-        # format string (int8, int16, int32, float32, double64, string)
-        self.fmt = xml["info"]["channel_format"][0]
-        # list of time-stamp chunks (each an ndarray, in seconds)
+
+        info = xml.get("info", {})
+
+        # Handle missing channel_count
+        if "channel_count" in info and len(info["channel_count"]) > 0:
+            self.nchns = int(info["channel_count"][0])
+        else:
+            print(f"Stream {stream_id} missing 'channel_count', defaulting to 1.")
+            self.nchns = 1
+
+        # Handle missing nominal_srate
+        if "nominal_srate" in info and len(info["nominal_srate"]) > 0:
+            self.srate = float(info["nominal_srate"][0])
+        else:
+            print(f"Stream {stream_id} missing 'nominal_srate', defaulting to 0.")
+            self.srate = 0.0
+
+        # Handle missing channel_format
+        if "channel_format" in info and len(info["channel_format"]) > 0:
+            self.fmt = info["channel_format"][0]
+        else:
+            print(f"Stream {stream_id} missing 'channel_format', defaulting to 'string'.")
+            self.fmt = "string"
+
+        # Initialize other fields as before
         self.time_stamps = []
-        # list of time-series chunks (each an ndarray or list of lists)
         self.time_series = []
-        # list of clock offset measurement times (in seconds)
         self.clock_times = []
-        # list of clock offset measurement values (in seconds)
         self.clock_values = []
-        # last observed time stamp, for delta decompression
         self.last_timestamp = 0.0
-        # nominal sampling interval, in seconds, for delta decompression
         self.tdiff = 1.0 / self.srate if self.srate > 0 else 0.0
         self.effective_srate = 0.0
-        # list of segments corresponding to detected time-stamp breaks
-        # (each a tuple of start_idx, end_idx)
-        self.segments = []
-        # list of segments corresponding to detected clock resets (each
-        # a tuple of start_idx, end_idx)
-        self.clock_segments = []
-        # pre-calc some parsing parameters for efficiency
+
         if self.fmt != "string":
             self.dtype = np.dtype(fmts[self.fmt])
-            # number of bytes to read from stream to handle one sample
             self.samplebytes = self.nchns * self.dtype.itemsize
 
-
+            
 def load_xdf(
     filename,
     select_streams=None,
@@ -296,9 +353,13 @@ def load_xdf(
                 decoded_string = xml_string.decode("utf-8", "replace")
                 hdr = _xml2dict(fromstring(decoded_string))
                 streams[StreamId] = hdr
-                logger.debug("  found stream " + hdr["info"]["name"][0])
+                # logger.debug("  found stream " + hdr["info"]["name"][0]) # ORIGINAL
+                stream_name = hdr["info"].get("name", [f"UnnamedStream_{StreamId}"])[0] # THIS AND LINE BELOW ADDED BY ME
+                logger.debug(f"  found stream {stream_name}") # THIS AND LINE ABOVE ADDED BY ME
+
                 # initialize per-stream temp data
-                temp[StreamId] = StreamData(hdr)
+                # temp[StreamId] = StreamData(hdr)   # ORIGINAL
+                temp[StreamId] = StreamData(hdr, stream_id=StreamId) # ADDEDE BY ME
             elif tag == 3:
                 # read [Samples] chunk...
                 # noinspection PyBroadException
@@ -379,13 +440,15 @@ def load_xdf(
         )
     else:
         for stream in temp.values():
-            # initialize effective_srate in case jitter_removal was not selected
-            if stream.srate != 0 and len(stream.time_stamps) > 1:
+            if len(stream.time_stamps) > 1:
                 duration = stream.time_stamps[-1] - stream.time_stamps[0]
-                stream.effective_srate = (len(stream.time_stamps) - 1) / duration
+                stream.effective_srate = len(stream.time_stamps) / duration
+            else:
+                stream.effective_srate = 0.0
             # initialize segment list in case jitter_removal was not selected
+            stream.segments = []
             if len(stream.time_stamps) > 0:
-                stream.segments.append((0, len(stream.time_stamps) - 1))  # inclusive
+                stream.segments.append((0, len(stream.time_series) - 1))  # inclusive
 
     for k in streams.keys():
         stream = streams[k]
@@ -396,13 +459,9 @@ def load_xdf(
                 "Using the 'stream_id' value {} from the beginning of the StreamHeader "
                 "chunk instead.".format(stream["info"]["stream_id"], k)
             )
-        if synchronize_clocks:
-            if tmp.segments != tmp.clock_segments:
-                logger.warning(f"Stream {k}: Segments and clock-segments differ")
         stream["info"]["stream_id"] = k
         stream["info"]["effective_srate"] = tmp.effective_srate
         stream["info"]["segments"] = tmp.segments
-        stream["info"]["clock_segments"] = tmp.clock_segments
         stream["time_series"] = tmp.time_series
         stream["time_stamps"] = tmp.time_stamps
         stream["clock_times"] = tmp.clock_times
@@ -542,87 +601,6 @@ def _scan_forward(f):
             return False
 
 
-def _find_segment_indices(b_breaks):
-    """Convert boundary breaks array to segment indices.
-
-    Args:
-        b_breaks : 1D bool array representing breaks between values.
-
-    Returns:
-        segments : list[tuple] (one tuple per segment)
-          - tuple: inclusive start and end indices.
-
-        start_idx : array
-          - segment start indices
-
-        end_idx : array
-          - segment end indices
-    """
-    break_inds = np.where(b_breaks)[0]
-    # Start: +1 to compensate for lost sample in np.diff
-    start_idx = np.hstack(([0], break_inds + 1))
-    # End: inclusive range (+1 will be required for slicing)
-    end_idx = np.hstack((break_inds, len(b_breaks)))
-    segments = list(zip(start_idx.tolist(), end_idx.tolist()))
-    return segments, start_idx, end_idx
-
-
-def _segment_clock_diff(diff, thresh_stds, thresh_secs):
-    median = np.median(diff)
-    diffs_shift = diff - median
-    diffs_shift_abs = np.abs(diffs_shift)
-    # Median absolute deviation
-    mad = np.median(diffs_shift_abs) + np.finfo(float).eps
-    # MAD-standardised distribution
-    diffs_std = diffs_shift / mad
-    cond1 = np.abs(diffs_std) > thresh_stds
-    cond2 = diffs_shift_abs > thresh_secs
-    b_break = cond1 & cond2
-    return b_break
-
-
-def _detect_clock_resets(
-    stream,
-    time_thresh_stds,
-    time_thresh_secs,
-    value_thresh_stds,
-    value_thresh_secs,
-):
-    # First detect potential breaks in the synchronization data; this is
-    # only necessary when the importer should be able to deal with
-    # recordings where the computer that served a stream was restarted or
-    # hot-swapped during an ongoing recording, or the clock was reset
-    # otherwise.
-
-    if len(stream.clock_times) <= 1:
-        raise ValueError("Two or more clock offsets are required for reset detection")
-
-    time_diff = np.diff(stream.clock_times)
-    value_diff = np.diff(stream.clock_values)
-
-    # Always segment at negative time intervals
-    decreasing = time_diff < 0
-
-    # Segment at time glitches
-    time_glitch = _segment_clock_diff(
-        time_diff,
-        time_thresh_stds,
-        time_thresh_secs,
-    )
-
-    # Segment at value glitches
-    value_glitch = _segment_clock_diff(
-        value_diff,
-        value_thresh_stds,
-        value_thresh_secs,
-    )
-    resets_at = decreasing | time_glitch & value_glitch
-
-    # Determine segments: [start,end] index ranges between resets (inclusive)
-    segments = _find_segment_indices(resets_at)[0]
-    return segments
-
-
 def _clock_sync(
     streams,
     handle_clock_resets=True,
@@ -632,7 +610,7 @@ def _clock_sync(
     reset_threshold_offset_seconds=1,
     winsor_threshold=0.0001,
 ):
-    for stream_id, stream in streams.items():
+    for stream in streams.values():
         if len(stream.time_stamps) > 0:
             clock_times = stream.clock_times
             clock_values = stream.clock_values
@@ -644,18 +622,44 @@ def _clock_sync(
             # recording note that this is a fancy feature that is not needed for normal
             # XDF compliance.
             if handle_clock_resets and len(clock_times) > 1:
-                logger.debug(f" Handling clock resets stream: {stream_id}")
-                ranges = _detect_clock_resets(
-                    stream,
-                    reset_threshold_stds,
-                    reset_threshold_seconds,
-                    reset_threshold_offset_stds,
-                    reset_threshold_offset_seconds,
-                )
+                # First detect potential breaks in the synchronization data; this is
+                # only necessary when the importer should be able to deal with
+                # recordings where the computer that served a stream was restarted or
+                # hot-swapped during an ongoing recording, or the clock was reset
+                # otherwise.
+
+                time_diff = np.diff(clock_times)
+                value_diff = np.abs(np.diff(clock_values))
+                median_ival = np.median(time_diff)
+                median_slope = np.median(value_diff)
+
+                # points where a glitch in the timing of successive clock measurements
+                # happened
+                mad = np.median(np.abs(time_diff - median_ival)) + np.finfo(float).eps
+                cond1 = time_diff < 0
+                cond2 = (time_diff - median_ival) / mad > reset_threshold_stds
+                cond3 = time_diff - median_ival > reset_threshold_seconds
+                time_glitch = cond1 | (cond2 & cond3)
+
+                # Points where a glitch in successive clock value estimates happened
+                mad = np.median(np.abs(value_diff - median_slope)) + np.finfo(float).eps
+                cond1 = value_diff < 0
+                cond2 = (value_diff - median_slope) / mad > reset_threshold_offset_stds
+                cond3 = value_diff - median_slope > reset_threshold_offset_seconds
+                value_glitch = cond1 | (cond2 & cond3)
+                resets_at = time_glitch & value_glitch
+
+                # Determine the [begin,end] index ranges between resets
+                if not any(resets_at):
+                    ranges = [(0, len(clock_times) - 1)]
+                else:
+                    indices = np.where(resets_at)[0]
+                    indices = np.hstack((0, indices, indices + 1, len(resets_at) - 1))
+                    ranges = np.reshape(indices, (2, -1)).T
+
             # Otherwise we just assume that there are no clock resets
             else:
                 ranges = [(0, len(clock_times) - 1)]
-            logger.debug(f"  Clock reset ranges: {ranges}")
 
             # Calculate clock offset mappings for each data range
             coef = []
@@ -664,129 +668,78 @@ def _clock_sync(
                     start, stop = range_i[0], range_i[1] + 1
                     X = np.column_stack(
                         [
-                            np.ones(stop - start),
+                            np.ones((stop - start,)),
                             np.array(clock_times[start:stop]) / winsor_threshold,
                         ]
                     )
                     y = np.array(clock_values[start:stop]) / winsor_threshold
-                    try:
-                        # noinspection PyTypeChecker
-                        _coefs = _robust_fit(X, y)
-                        _coefs[0] *= winsor_threshold
-                    except np.linalg.LinAlgError:
-                        logger.warning(
-                            f"Stream {stream_id}: "
-                            f"Clock offsets {range_i} cannot be used for synchronization"
-                        )
-                        _coefs = [0, 0]
+                    # noinspection PyTypeChecker
+                    _coefs = _robust_fit(X, y)
+                    _coefs[0] *= winsor_threshold
                     coef.append(_coefs)
                 else:
-                    # Intercept for single sample segments
                     coef.append((clock_values[range_i[0]], 0))
 
-            # Apply the correction to all time-stamps
+            # Apply the correction to all time stamps
             if len(ranges) == 1:
                 stream.time_stamps += coef[0][0] + (coef[0][1] * stream.time_stamps)
-                stream.clock_segments.append(
-                    (0, len(stream.time_stamps) - 1)  # inclusive
-                )
             else:
-                # Assumes time-stamps are monotonically increasing
-                ts_start = 0
                 for coef_i, range_i in zip(coef, ranges):
-                    stop = range_i[1] + 1
-                    if stop < len(clock_times):
-                        # Break at the first time-stamp that is closer to the next
-                        # clock-time than the end of the current clock segment
-                        current_end_t = clock_times[range_i[1]]
-                        next_start_t = clock_times[stop]
-                        ts_stop = ts_start + (
-                            np.argmin(
-                                np.less(
-                                    np.abs(
-                                        stream.time_stamps[ts_start:] - current_end_t
-                                    ),
-                                    np.abs(
-                                        stream.time_stamps[ts_start:] - next_start_t
-                                    ),
-                                )
-                            ).item()
-                        )
-                    else:
-                        # Include all time-stamps from the last break until the end
-                        ts_stop = len(stream.time_stamps)
-                    if ts_start == ts_stop:
-                        logger.warning(
-                            (
-                                f"Stream {stream_id}: "
-                                f"No samples in clock offsets {range_i}, skipping..."
-                            )
-                        )
-                    else:
-                        stream.clock_segments.append((ts_start, ts_stop - 1))
-                        ts_slice = slice(ts_start, ts_stop)
-                        ts_start = ts_stop
-                        stream.time_stamps[ts_slice] += (
-                            coef_i[0] + coef_i[1] * stream.time_stamps[ts_slice]
-                        )
+                    r = slice(range_i[0], range_i[1])
+                    stream.time_stamps[r] += (
+                        coef_i[0] + coef_i[1] * stream.time_stamps[r]
+                    )
     return streams
-
-
-def _detect_breaks(stream, threshold_seconds=1.0, threshold_samples=500):
-    """Detect breaks in the time_stamps of a stream.
-
-    Returns:
-        b_breaks : 1D bool array representing breaks between values.
-    """
-    diffs = np.diff(stream.time_stamps)
-    b_breaks = (diffs < 0) | (
-        diffs > np.max((threshold_seconds, threshold_samples * stream.tdiff))
-    )
-    return b_breaks
 
 
 def _jitter_removal(streams, threshold_seconds=1, threshold_samples=500):
     for stream_id, stream in streams.items():
         stream.effective_srate = 0  # will be recalculated if possible
         nsamples = len(stream.time_stamps)
-        if nsamples > 0:
-            if stream.srate == 0:
-                # Initialise default segment for irregular sampling rate streams
-                stream.segments.append((0, nsamples - 1))  # inclusive
-                continue
+        stream.segments = []
+        if nsamples > 0 and stream.srate > 0:
+            # Identify breaks in the time_stamps
+            diffs = np.diff(stream.time_stamps)
+            b_breaks = diffs > np.max(
+                (threshold_seconds, threshold_samples * stream.tdiff)
+            )
+            # find indices (+ 1 to compensate for lost sample in np.diff)
+            break_inds = np.where(b_breaks)[0] + 1
 
-            # Find boundary breaks
-            b_breaks = _detect_breaks(stream, threshold_seconds, threshold_samples)
-            # Find segment indices
-            segments, start_idx, stop_idx = _find_segment_indices(b_breaks)
-            logger.debug(f" Stream {stream_id}: segments={len(segments)}")
-            stream.segments.extend(segments)
-
+            # Get indices delimiting segments without breaks
+            # 0th sample is a segment start and last sample is a segment stop
+            seg_starts = np.hstack(([0], break_inds))
+            seg_stops = np.hstack((break_inds - 1, nsamples - 1))  # inclusive
+            for a, b in zip(seg_starts, seg_stops):
+                stream.segments.append((a, b))
             # Process each segment separately
-            for start_i, stop_i in segments:
+            for start_ix, stop_ix in zip(seg_starts, seg_stops):
                 # Calculate time stamps assuming constant intervals within each segment
-                # (stop_i + 1 because we want inclusive closing range)
-                idx = np.arange(start_i, stop_i + 1, 1)[:, None]
+                # (stop_ix + 1 because we want inclusive closing range)
+                idx = np.arange(start_ix, stop_ix + 1, 1)[:, None]
                 X = np.concatenate((np.ones_like(idx), idx), axis=1)
                 y = stream.time_stamps[idx]
                 mapping = np.linalg.lstsq(X, y, rcond=-1)[0]
                 stream.time_stamps[idx] = mapping[0] + mapping[1] * idx
 
             # Recalculate effective_srate if possible
-            counts = (stop_idx + 1) - start_idx
-            if np.any(counts > 1):
-                # Calculate segment durations
-                durations = stream.time_stamps[stop_idx] - stream.time_stamps[start_idx]
-                # Calculate effective srate as weighted mean
-                stream.effective_srate = np.sum(counts - 1) / np.sum(durations)
+            counts = (seg_stops + 1) - seg_starts
+            if np.any(counts):
+                # Calculate range segment duration (assuming last sample duration was
+                # exactly 1 * stream.tdiff)
+                durations = (
+                    stream.time_stamps[seg_stops] + stream.tdiff
+                ) - stream.time_stamps[seg_starts]
+                stream.effective_srate = np.sum(counts) / np.sum(durations)
 
-            srate, effective_srate = stream.srate, stream.effective_srate
-            if np.abs(srate - effective_srate) / srate > 0.1:
-                msg = (
-                    "Stream %d: Calculated effective sampling rate %.4f Hz is different "
-                    "from specified rate %.4f Hz."
-                )
-                logger.warning(msg, stream_id, effective_srate, srate)
+        srate, effective_srate = stream.srate, stream.effective_srate
+        if srate != 0 and np.abs(srate - effective_srate) / srate > 0.1:
+            msg = (
+                "Stream %d: Calculated effective sampling rate %.4f Hz is different "
+                "from specified rate %.4f Hz."
+            )
+            logger.warning(msg, stream_id, effective_srate, srate)
+
     return streams
 
 
@@ -829,7 +782,7 @@ def _robust_fit(A, y, rho=1, iters=1000):
     return x
 
 
-def match_streaminfos(stream_infos, parameters, *, case_sensitive=True):
+def match_streaminfos(stream_infos, parameters):
     """Find stream IDs matching specified criteria.
 
     Parameters
@@ -845,30 +798,19 @@ def match_streaminfos(stream_infos, parameters, *, case_sensitive=True):
           - [{"name": "Keyboard"}, {"type": "EEG"}] matches all streams with a "name"
             field equal to "Keyboard" and all streams with a "type" field equal to
             "EEG".
-    case_sensitive : bool
-        Whether or not matching of values corresponding to keys from `parameters` and
-        the stream info should be done case sensitive. Defaults to `True`.
-
-    Returns
-    -------
-    list of int
-        A list of unique stream IDs matching the specified criteria.
     """
     matches = []
     match = False
     for request in parameters:
         for info in stream_infos:
             for key in request.keys():
-                if case_sensitive:
-                    match = info[key] == request[key]
-                else:
-                    match = info[key].lower() == request[key].lower()
+                match = info[key] == request[key]
                 if not match:
                     break
             if match:
                 matches.append(info["stream_id"])
 
-    return list(set(matches))  # unique values only
+    return list(set(matches))  # return unique values
 
 
 def resolve_streams(fname):
